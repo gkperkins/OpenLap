@@ -65,6 +65,7 @@ class AppConfig:
     gpx_path:       str = ""
     vbox_path:      str = ""
     unipro_path:    str = ""
+    racechrono_path: str = ""
     # Legacy single telemetry folder — kept as scan-all fallback for old configs
     telemetry_path: str = ""
     video_path:     str = ""
@@ -116,7 +117,7 @@ class AppConfig:
         seen: set = set()
         result: List[str] = []
         for p in (self.racebox_path, self.aim_path, self.motec_path,
-                  self.gpx_path, self.vbox_path, self.unipro_path, self.telemetry_path):
+                  self.gpx_path, self.vbox_path, self.unipro_path, self.racechrono_path, self.telemetry_path):
             p = p.strip()
             if not p:
                 continue
@@ -366,6 +367,7 @@ def _from_dict(data: dict) -> AppConfig:
         gpx_path       = data.get('gpx_path',       ''),
         vbox_path      = data.get('vbox_path',      ''),
         unipro_path    = data.get('unipro_path',    ''),
+        racechrono_path = data.get('racechrono_path', ''),
         telemetry_path = data.get('telemetry_path', ''),
         video_path     = data.get('video_path',     ''),
         export_path    = data.get('export_path',    ''),

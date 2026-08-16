@@ -293,7 +293,7 @@ class WebviewAPI:
             # Update string fields
             simple_fields = [
                 'racebox_path', 'aim_path', 'motec_path', 'gpx_path', 'vbox_path',
-                'unipro_path', 'telemetry_path', 'video_path', 'export_path', 'racebox_email',
+                'unipro_path', 'racechrono_path', 'telemetry_path', 'video_path', 'export_path', 'racebox_email',
             ]
             for f in simple_fields:
                 if f in data:
@@ -1688,7 +1688,7 @@ class WebviewAPI:
     def _load_one_session(csv_path: str):
         """Load a single telemetry file, auto-detecting its format. Does not
         apply any secondary-source merge — use _load_session() for that."""
-        import gpx_data, aim_data, racebox_data, motec_data, vbox_data, unipro_data
+        import gpx_data, aim_data, racebox_data, motec_data, vbox_data, unipro_data, racechrono_data
         from session_scanner import resolve_xrk_csv
         csv_path = resolve_xrk_csv(csv_path)
         if vbox_data.is_vbox(csv_path):
@@ -1701,6 +1701,8 @@ class WebviewAPI:
             return unipro_data.load_tsv(csv_path)
         if unipro_data.is_unipro_uni(csv_path):
             return unipro_data.load_uni(csv_path)
+        if racechrono_data.is_racechrono_csv(csv_path):
+            return racechrono_data.load_racechrono_csv(csv_path)
         if aim_data.is_aim_csv(csv_path):
             return aim_data.load_csv(csv_path)
         return racebox_data.load_csv(csv_path)

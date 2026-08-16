@@ -1,7 +1,7 @@
 """
 session_scanner.py — Session matcher and state manager
 =======================================================
-Scans folders for telemetry files (RaceBox CSV, AIM XRK, MoTeC LD, GPX)
+Scans folders for telemetry files (RaceBox CSV, AIM XRK, RaceChrono CSV, MoTeC LD, GPX)
 and video files, matches them by timestamp proximity, and persists
 processing state so runs can be resumed after interruption.
 
@@ -431,6 +431,8 @@ def _sniff_candidate(path: str, suffix: str) -> bool:
     try:
         with open(path, 'r', encoding='utf-8-sig', errors='ignore') as f:
             content = f.read(2000)
+        if 'RaceChrono' in content and 'lap_number' in content:
+            return True
         if 'Record,Time,' in content and 'RaceBox' in content:
             return True
         return content.startswith('Time (s),') or '\nTime (s),' in content
@@ -440,8 +442,8 @@ def _sniff_candidate(path: str, suffix: str) -> bool:
 
 
 def scan_csvs(folder: str, cache: Optional[Dict[str, dict]] = None) -> List[str]:
-    """Recursively find all RaceBox, AIM Mychron CSV, GPX, MoTeC .ld, VBOX .vbo,
-    and Unipro .uni/.tsv files.
+    """Recursively find all RaceBox, AIM Mychron, RaceChrono, GPX, MoTeC .ld, 
+    VBOX .vbo, and Unipro .uni/.tsv files.
 
     *cache* is the 'csvs' namespace of the file-meta cache (path -> {size, mtime,
     valid}), mutated in place. Files whose (size, mtime) still match a cache entry

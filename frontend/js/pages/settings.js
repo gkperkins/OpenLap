@@ -58,6 +58,7 @@
       ${_folderRow('GPX',         'gpx_path',     cfg.gpx_path,     '.gpx GPS track files')}
       ${_folderRow('VBOX',        'vbox_path',    cfg.vbox_path,    'Racelogic VBOX .vbo files')}
       ${_folderRow('Unipro',      'unipro_path',  cfg.unipro_path,  'Unipro Laptimer .uni or Analyser .tsv exports')}
+      ${_folderRow('RaceChrono',  'racechrono_path', cfg.racechrono_path, 'RaceChrono Pro CSV exports')}
     </section>
 
     <!-- Video & output -->

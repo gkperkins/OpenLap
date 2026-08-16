@@ -53,7 +53,7 @@ if not FRONTEND_HTML.exists():
 
 def _cache_busted_html() -> Path:
     """Return a copy of index.html with every local script/link URL suffixed
-    ?v=<app version>.
+    ?v=<app version or dev timestamp>.
 
     pywebview's WebView2 profile (%APPDATA%\\pywebview\\EBWebView) is shared by
     every pywebview app on the machine and reused at the exact same install
@@ -66,20 +66,27 @@ def _cache_busted_html() -> Path:
     Falls back to the unmodified file if the install location isn't writable
     (e.g. a read-only Program Files install without elevation) — no worse
     than the pre-existing behavior in that case.
+    
+    In development mode (running from source), uses a timestamp so the cache
+    busts on every run. In production (frozen), uses the version string.
     """
     import re
+    import time
     from _version import __version__
 
     try:
         html = FRONTEND_HTML.read_text(encoding='utf-8')
 
+        # Use timestamp in dev (running from source), version string in production (frozen)
+        cache_bust_key = str(int(time.time())) if not getattr(sys, 'frozen', False) else __version__
+
         def _bust(m: re.Match) -> str:
             attr, url = m.group(1), m.group(2)
             sep = '&' if '?' in url else '?'
-            return f'{attr}="{url}{sep}v={__version__}"'
+            return f'{attr}="{url}{sep}v={cache_bust_key}"'
 
         busted = re.sub(r'(src|href)="((?:js|css)/[^"]+)"', _bust, html)
-        out_path = FRONTEND_DIR / f'.index_v{__version__}.html'
+        out_path = FRONTEND_DIR / f'.index_v{cache_bust_key}.html'
         out_path.write_text(busted, encoding='utf-8')
         _cleanup_stale_cache_busted_html(out_path)
         return out_path
