@@ -31,6 +31,7 @@ def _setup_logging() -> None:
     root = logging.getLogger()
     root.setLevel(logging.DEBUG)
     root.addHandler(fh)
+    root.addHandler(logging.StreamHandler(sys.stdout))
 
 
 _setup_logging()

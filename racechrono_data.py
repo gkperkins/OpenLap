@@ -266,14 +266,21 @@ def load_racechrono_csv(path: str) -> Session:
         lap_t0 = pts[0].time
         for pt in pts:
             pt.lap_elapsed = (pt.time - lap_t0).total_seconds()
-        dur = (pts[-1].time - pts[0].time).total_seconds()
-        laps.append(Lap(lap_num=lap_num, points=pts, duration=dur, is_outlap=(lap_num == 0)))
+        next_lap = buckets[lap_num+1]
+        if next_lap:
+              end_ref = next_lap[0].time
+              inlap = False
+        else:
+              end_ref = pts[-1].time
+              inlap = True
+        dur = (end_ref - pts[0].time).total_seconds()
+        laps.append(Lap(lap_num=lap_num, points=pts, duration=dur, is_outlap=(lap_num == 0), is_inlap=(inlap)))
     
-    timed = [l for l in laps if l.lap_num > 0]
-    if len(timed) >= 3:
-        med = sorted(l.duration for l in timed)[len(timed) // 2]
-        if timed[-1].duration > med * _INLAP_SLOWNESS_THRESHOLD:
-            timed[-1].is_inlap = True
+    timed = [l for l in laps if not l.is_outlap and not l.is_inlap]
+    # if len(timed) >= 3:
+    #     med = sorted(l.duration for l in timed)[len(timed) // 2]
+    #     if timed[-1].duration > med * _INLAP_SLOWNESS_THRESHOLD:
+    #         timed[-1].is_inlap = True
     
     best_lap_time = min((l.duration for l in timed), default=0.0)
     date_str = all_pts[0].time.strftime('%Y-%m-%dT%H:%M:%SZ') if all_pts else ''
