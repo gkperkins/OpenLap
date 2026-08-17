@@ -68,6 +68,56 @@ def test_load_vbo_bare_velocity_defaults_kmh(tmp_path):
     assert session.source_speed_unit == 'kmh'
 
 
+def test_load_vbo_parses_decimal_minutes_and_preserves_extra_fields(tmp_path):
+    path = _write_vbo(
+        tmp_path,
+        ['time', 'latitude', 'longitude', 'velocity kmh', 'engine rpm', 'CAN Bus 1'],
+        '120000.00 +02441.316485 +04958.156830 100.0 8000.0 12.5',
+        unit_lines=['s', 'min', 'min', 'km/h', 'rpm', 'V'],
+    )
+    session = load_vbo(path)
+    pt = session.all_points[0]
+    assert pt.lat == pytest.approx(40.68860808333333)
+    assert pt.lon == pytest.approx(-82.63594716666667)
+    assert pt.rpm == pytest.approx(8000.0)
+    assert pt.extra['CAN Bus 1'] == pytest.approx(12.5)
+    assert session.extra_channel_meta['CAN Bus 1'] == {'label': 'CAN Bus 1', 'unit': 'V'}
+
+
+def test_load_vbo_splits_laps_from_laptiming_start_line():
+    session = load_vbo('examples/session_20260811_132911_mid-ohio.vbo')
+    assert len(session.laps) == 12
+    assert session.laps[0].lap_num == 1
+    assert session.laps[-1].lap_num == 12
+
+
+def test_load_vbo_ignores_split_entries_when_finding_start_line(tmp_path):
+    # The VBOX start line is a gate; a valid lap crossing needs a real sign change
+    # across the line and then a later crossing after a sufficient gap. This data
+    # intentionally includes a Split marker but only the Start line should drive the
+    # lap count.
+    lines = [
+        '[header]', 'time', 'latitude', 'longitude', 'velocity kmh', '',
+        '[comments]', 'File created on 15/06/2024 at 14:32:00 by VBOX Tools', '',
+        '[laptiming]',
+        'Split   +0001.000000 +0000.000000 +0002.000000 +0000.000000',
+        'Start   +0000.000000 +0000.000000 +0000.000000 +0001.000000',
+        '',
+        '[data]',
+        '120000.00 +0000.500000 +0000.500000 010.0',
+        '120030.00 +0000.500000 -0000.500000 010.0',
+        '121000.00 +0000.500000 -0000.500000 010.0',
+        '121100.00 +0000.500000 +0000.500000 010.0',
+    ]
+    path = tmp_path / 'split_and_start.vbo'
+    path.write_text('\n'.join(lines), encoding='utf-8')
+
+    session = load_vbo(str(path))
+
+    assert len(session.laps) >= 2
+    assert len(session.laps) == 2
+
+
 # ── Exception types ────────────────────────────────────────────────────────────
 
 def test_load_vbo_missing_header_section_raises_typed(tmp_path):

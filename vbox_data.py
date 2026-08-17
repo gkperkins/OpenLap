@@ -18,7 +18,6 @@ import logging
 import re
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from math import floor
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -28,6 +27,7 @@ from exceptions import MissingHeaderError, NoDataRowsError, CSVParseError
 logger = logging.getLogger(__name__)
 
 _INLAP_SLOWNESS_THRESHOLD = 1.5
+_VBOX_LAP_CROSSING_MIN_GAP_SECONDS = 80.0
 
 
 # ── Public detection ──────────────────────────────────────────────────────────
@@ -71,12 +71,43 @@ def _parse_date_from_comments(comments: str) -> Optional[datetime]:
     return None
 
 
-def _dms_to_decimal(raw: float, hemisphere: str) -> float:
-    """Convert Racelogic DDMM.MMMMM encoding to decimal degrees."""
-    deg = floor(abs(raw) / 100)
-    minutes = abs(raw) - deg * 100
-    decimal = deg + minutes / 60.0
-    return -decimal if hemisphere in ('S', 'W') else decimal
+def _parse_vbox_start_line(line: str) -> Optional[Tuple[Tuple[float, float], Tuple[float, float]]]:
+    """Parse a [laptiming] "Start" line into two GPS points.
+
+    The VBOX file records the start/finish line as two coordinates, typically
+    longitude/latitude pairs in the logger's minute convention. We only need the
+    endpoint pair to detect crossings of that line over time.
+    """
+    m = re.search(
+        r'^\s*Start\s+([+-]?\d+(?:\.\d+)?)\s+([+-]?\d+(?:\.\d+)?)\s+'
+        r'([+-]?\d+(?:\.\d+)?)\s+([+-]?\d+(?:\.\d+)?)',
+        line,
+        re.IGNORECASE,
+    )
+    if not m:
+        return None
+    lon1, lat1, lon2, lat2 = [float(v) for v in m.groups()]
+    return (
+        (-_vbox_minutes_to_decimal(lon1), _vbox_minutes_to_decimal(lat1)),
+        (-_vbox_minutes_to_decimal(lon2), _vbox_minutes_to_decimal(lat2)),
+    )
+
+
+def _vbox_minutes_to_decimal(raw: float) -> float:
+    """Convert VBOX minute values to decimal degrees.
+
+    The reference data shows VBOX latitude/longitude are stored as minute values,
+    not as packed degree+minute integers. In the example .vbo file, values like
+    +04958.156830 correspond to 4958.156830 minutes = 82.635947... degrees,
+    but the longitude sign is inverted relative to standard GPS for this logger
+    format. We keep the minute conversion generic and flip longitude below.
+    """
+    value = float(raw)
+    if value == 0.0:
+        return 0.0
+    if abs(value) > 100000.0:
+        value /= 100000.0
+    return value / 60.0
 
 
 def _parse_hhmmss(raw: float) -> Tuple[int, int, float]:
@@ -105,17 +136,25 @@ def load_vbo(path: str) -> Session:
     if not header_lines:
         raise MissingHeaderError(f"No [header] section in {path}")
 
-    channels = [c.strip().lower() for c in header_lines]
+    channels = [c.strip() for c in header_lines]
+    norm_channels = [c.lower() for c in channels]
 
-    unit_lines = [u.strip().lower() for u in sections.get('channel units', [])]
+    unit_lines = [u.strip() for u in sections.get('channel units', [])]
     units: Dict[str, str] = dict(zip(channels, unit_lines)) if unit_lines else {}
+    unit_lookup = {ch.lower(): unit for ch, unit in units.items()}
+
+    def _unit_for(ch: str) -> str:
+        return unit_lookup.get(ch.strip().lower(), units.get(ch, ''))
 
     # ── Channel index lookup ──────────────────────────────────────────────────
 
     def _find(*names: str) -> Optional[int]:
         for name in names:
-            for i, ch in enumerate(channels):
-                if ch == name or ch.startswith(name):
+            norm_name = name.strip().lower()
+            for i, ch in enumerate(norm_channels):
+                norm_ch = ch.strip().lower()
+                if (norm_ch == norm_name or norm_ch.startswith(norm_name)
+                        or norm_ch.endswith(norm_name) or norm_name in norm_ch):
                     return i
         return None
 
@@ -128,20 +167,18 @@ def load_vbo(path: str) -> Session:
     idx_lon_g   = _find('longitudinal-acc', 'longitudinal acc', 'ax')
     idx_vert_g  = _find('az', 'vertical-acc', 'vertical acc')
     idx_lap     = _find('lap trigger', 'lap-trigger', 'lapctr', 'lap beacon', 'lap count')
-    idx_rpm     = _find('rpm')
+    idx_rpm     = _find('rpm', 'engine rpm', 'engine_rpm', 'engine rpm ', 'engine_rpm ')
     idx_yaw     = _find('yaw rate', 'yaw-rate')
 
     if idx_time is None or idx_lat is None or idx_lon is None:
         raise MissingHeaderError(f"Missing required channels (time/lat/lon) in {path}")
 
-    # Hemisphere: read from channel name
-    lat_hem = 'S' if any('south' in c for c in channels if 'latitude' in c) else 'N'
-    lon_hem = 'W' if any('west'  in c for c in channels if 'longitude' in c) else 'E'
-
+    # VBOX coordinates are minute values; do not infer a hemisphere from the
+    # channel name. The value's sign (when present) is the authoritative source.
     # Speed conversion factor
     speed_ch = channels[idx_speed] if idx_speed is not None else ''
-    speed_unit = units.get(speed_ch, '')
-    if 'kmh' in speed_ch or 'km/h' in speed_unit or 'kph' in speed_unit:
+    speed_unit = _unit_for(speed_ch).lower()
+    if 'kmh' in speed_ch.lower() or 'km/h' in speed_unit or 'kph' in speed_unit:
         speed_factor = 1.0
         source_speed_unit = 'kmh'
     elif 'mph' in speed_ch or 'mph' in speed_unit:
@@ -164,9 +201,41 @@ def load_vbo(path: str) -> Session:
     if not data_lines:
         raise NoDataRowsError(f"No [data] section in {path}")
 
+    lap_line = None
+    if idx_lap is None:
+        for raw_line in sections.get('laptiming', []):
+            if not raw_line.lstrip().lower().startswith('start'):
+                continue
+            lap_line = _parse_vbox_start_line(raw_line)
+            if lap_line is not None:
+                break
+
     all_pts: List[DataPoint] = []
     prev_dt: Optional[datetime] = None
     day_offset = 0
+
+    consumed_idx = {
+        idx_time,
+        idx_lat,
+        idx_lon,
+        idx_speed,
+        idx_height,
+        idx_lat_g,
+        idx_lon_g,
+        idx_vert_g,
+        idx_lap,
+        idx_rpm,
+        idx_yaw,
+    }
+    consumed_idx = {i for i in consumed_idx if i is not None}
+    extra_names: List[str] = []
+    extra_channel_meta: Dict[str, dict] = {}
+    for i, ch in enumerate(channels):
+        if i in consumed_idx or not ch.strip():
+            continue
+        name = ch.strip()
+        extra_names.append(name)
+        extra_channel_meta[name] = {'label': name, 'unit': _unit_for(name)}
 
     for record_idx, line in enumerate(data_lines):
         cols = line.split()
@@ -199,8 +268,8 @@ def load_vbo(path: str) -> Session:
                           tzinfo=timezone.utc)
         prev_dt = dt
 
-        lat = _dms_to_decimal(_col(idx_lat), lat_hem)
-        lon = _dms_to_decimal(_col(idx_lon), lon_hem)
+        lat = _vbox_minutes_to_decimal(_col(idx_lat))
+        lon = -_vbox_minutes_to_decimal(_col(idx_lon))
 
         speed  = _col(idx_speed) * speed_factor
         lat_g  = _col(idx_lat_g)   # → gforce_y (lateral)
@@ -212,6 +281,18 @@ def load_vbo(path: str) -> Session:
 
         # lap trigger increments at each beacon crossing (0 = outlap)
         lap_num = int(_col(idx_lap)) if idx_lap is not None else 1
+
+        extra = {}
+        for name in extra_names:
+            idx = next((i for i, ch in enumerate(norm_channels)
+                        if ch.strip() == name.strip().lower()), None)
+            if idx is None or idx >= len(cols):
+                extra[name] = 0.0
+                continue
+            try:
+                extra[name] = float(cols[idx])
+            except ValueError:
+                extra[name] = 0.0
 
         all_pts.append(DataPoint(
             record     = record_idx,
@@ -228,10 +309,63 @@ def load_vbo(path: str) -> Session:
             gyro_y     = 0.0,
             gyro_z     = yaw,
             rpm        = rpm,
+            extra      = extra,
         ))
 
     if not all_pts:
         raise NoDataRowsError(f"No valid data rows parsed from {path}")
+
+    if idx_lap is None and lap_line is not None:
+        a, b = lap_line
+        v_x = b[0] - a[0]
+        v_y = b[1] - a[1]
+        cross_vals: List[float] = []
+        for pt in all_pts:
+            w_x = pt.lon - a[0]
+            w_y = pt.lat - a[1]
+            cross_vals.append(v_x * w_y - v_y * w_x)
+
+        # Collect all pos->neg crossings (positive to negative), which occur once per lap
+        # on a closed loop track. Filter them by gap to eliminate jitter.
+        pos_neg_crossings: List[Tuple[int, datetime]] = []
+        for i in range(1, len(all_pts)):
+            prev, curr = cross_vals[i - 1], cross_vals[i]
+            if prev == 0.0:
+                prev = 1e-12
+            if curr == 0.0:
+                curr = 1e-12
+            # Only count positive-to-negative direction crossings
+            if prev > 0.0 and curr < 0.0:
+                pos_neg_crossings.append((i, all_pts[i].time))
+
+        # Filter crossings: keep only those with sufficient gap from the previous one
+        valid_crossings: List[Tuple[int, datetime]] = []
+        for i, (idx, t) in enumerate(pos_neg_crossings):
+            if i == 0:
+                # Always accept first crossing
+                valid_crossings.append((idx, t))
+            else:
+                prev_time = pos_neg_crossings[i - 1][1]
+                gap = (t - prev_time).total_seconds()
+                if gap >= _VBOX_LAP_CROSSING_MIN_GAP_SECONDS:
+                    valid_crossings.append((idx, t))
+
+        # Assign lap numbers based on valid crossing boundaries
+        # Points from the session start up to the first valid crossing are lap 1
+        # Points between crossing N and crossing N+1 are lap N+1
+        lap_nums = [0] * len(all_pts)
+        if valid_crossings:
+            for i, pt_cross_val in enumerate(cross_vals):
+                lap_num = 1
+                for j, (cross_idx, _) in enumerate(valid_crossings):
+                    if i >= cross_idx:
+                        lap_num = j + 2
+                lap_nums[i] = lap_num
+        else:
+            lap_nums = [1] * len(all_pts)
+
+        for pt, lap_num in zip(all_pts, lap_nums):
+            pt.lap = lap_num
 
     # ── Elapsed times ─────────────────────────────────────────────────────────
 
@@ -278,4 +412,5 @@ def load_vbo(path: str) -> Session:
         is_bike       = False,
         csv_path      = path,
         source_speed_unit = source_speed_unit,
+        extra_channel_meta = extra_channel_meta,
     )
